@@ -8,3 +8,5 @@ DragLights encodes the rules below with the 'lamps' implemented as NeoPixel LEDs
 - One active low digital input switch is used to start/reset the lights sequence.
 - Pairs of active low digital inputs are used to signal the prestage and staged optical 
   beams per racer.
+- Optionally, one digital input signals racer going past finish line if timing mode 
+  is enabled. At the end of the run the time results are printed to the serial monitor.

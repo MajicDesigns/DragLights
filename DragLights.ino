@@ -9,6 +9,8 @@ Implementation
 - One active low digital input switch is used to start/reset the lights sequence.
 - Pairs of active low digital inputs are used to signal the prestage and staged optical 
   beams per racer.
+- Optionally, one digital input signals racer going past finish line if the timing mode 
+  is enabled. At the end of the run the time results are printed to the serial monitor.
 
 Light Rules
 ===========
@@ -69,6 +71,10 @@ FASTLed can be found at https://fastled.io/ or the IDE library manager.
 #include <FastLED.h>
 #include <MD_UISwitch.h>
 
+// Define whether timing results option is enabled
+// Set true = enabled, false = dsabled
+#define TIMING_ENABLED true
+
 // Define the running mode for the tree
 // Set 0 = Standard, 1 = Professional or 2 = Hybrid
 #ifndef TREE_MODE
@@ -115,11 +121,13 @@ const CRGB LAMP_FOUL = CRGB::Red;
 // Define the offsets from base for each set of lights
 const uint8_t idStaging = 0;            // LED offset for the staging lamp
 const uint8_t idStaged = 1;             // LED number for the staged lamp
-const uint8_t idReady[3] = { 2, 3, 4 }; // LED numbers for the ready lamps (yellow)
+const uint8_t idReady[] = { 2, 3, 4 };  // LED numbers for the ready lamps (yellow)
 const uint8_t idGo = 5;                 // LED number for the go lamp (green)
 const uint8_t idFoul = 6;               // LED number for the foul lamp (red)
 
-const uint8_t LED_PER_TREE = 7;         // Number of LEDS in each tree
+const uint8_t LED_PER_TREE = 7;                  // Number of LEDS in each tree
+const uint8_t READY_COUNT = ARRAY_SIZE(idReady); // Number of ready LEDS in a tree
+
 
 // Define what we need to keep track of for one tree of lamps
 struct oneTree_t
@@ -153,36 +161,51 @@ CRGB led[NUM_LEDS];
 // This is the LED type and other parameters for FastLED initialization
 // For led chips like WS2812, which have 3 wires (data, ground, power) define 
 // a data pin for comms to the LED string.
-#define CHIPSET_TYPE WS2811
+#define CHIPSET_TYPE WS2812B
 const EOrder RGB_TYPE = GRB;
 const uint8_t DATA_PIN = 3;
 
 // Define what we need to keep track of for one racer
 struct oneRacer_t
 {
+  // Keep statically (once only) initialised items together
   uint8_t pinStaged;  // input pin indicates staged when low
   uint8_t pinFoul;    // input pin indicates foul when low
+#if TIMING_ENABLED
+  uint8_t pinFinish;  // input pin indicates racer past finish line when low
+#endif
+
+  // Dynamically initialised items
   bool isStaged;      // true if the racer is staged
   bool isFoul;        // true if tree is showing foul
+#if TIMING_ENABLED
+  uint32_t timeResult; // timing result for foul or finish line
+#endif
 };
 
-// Define the data for all the racers
+// Define the pin data for all the racers
 // One line entry per racer. There are normally only 2 racers in a drag race
 // but more can be defined if required without changes to the software.
+// Data not statically initialized should be done in the RESET state.
 oneRacer_t racer[] =
 {
-  { 4, 5, false, false },
-  { 6, 7, false, false },
+#if TIMING_ENABLED
+  // Stage, Foul, Finish
+  { 4, 5, 6 },
+  { 7, 8, 9 },
+#else
+  // Stage, Foul
+  { 4, 5 },
+  { 7, 8 },
+#endif
 };
 
 // Derive global constants from this array definition
 const uint8_t NUM_RACERS = ARRAY_SIZE(racer);
 
 // Define what we need to know to control the event
-const uint8_t PIN_CONTROL = 8;
-
+const uint8_t PIN_CONTROL = 10;
 MD_UISwitch_Digital swControl(PIN_CONTROL);
-
 
 void setLampsOff(void)
 {
@@ -190,7 +213,7 @@ void setLampsOff(void)
   {
     led[display[i].idLEDBase + idStaging] = LAMP_OFF;
     led[display[i].idLEDBase + idStaged] = LAMP_OFF;
-    for (auto j=0; j<ARRAY_SIZE(idReady); j++)
+    for (auto j=0; j<READY_COUNT; j++)
       led[display[i].idLEDBase + idReady[j]] = LAMP_OFF;
     led[display[i].idLEDBase + idGo] = LAMP_OFF;
     led[display[i].idLEDBase + idFoul] = LAMP_OFF;
@@ -241,6 +264,7 @@ void setLampsFoul(uint8_t racer)
 }
 
 bool alreadyFoul(void)
+// return true if at least one racer is fouled
 {
   bool b = false;
 
@@ -251,7 +275,8 @@ bool alreadyFoul(void)
   return(b);
 }
 
-bool checkForFalseStart(void)
+bool checkForFalseStart(uint32_t timeStart, uint32_t timePeriod)
+// return true if any racers have fouled
 {
   bool b = false;
 
@@ -262,13 +287,68 @@ bool checkForFalseStart(void)
     {
       setLampsFoul(i);
       racer[i].isFoul = b = true;
+#if TIMING_ENABLED
+      racer[i].timeResult = timePeriod - (millis() - timeStart);
+#endif
     }
   }
   return(b);
 }
 
+#if TIMING_ENABLED
+
+bool checkForFinish(uint32_t timeStart)
+// return true is all racers are finished
+{
+  bool b = true;
+
+  // check the finish inputs
+  for (auto i = 0; i < NUM_RACERS; i++)
+  {
+    // not fouled or not already recorded time
+    if (!racer[i].isFoul && (racer[i].timeResult == 0))
+    {
+      if (digitalRead(racer[i].pinFinish) == LOW)   // this racer has finished
+        racer[i].timeResult = millis() - timeStart;
+      else
+        b = false; // not finished, change return status
+    }
+  }
+
+  return(b);
+}
+
+void showTimeResults(void)
+{
+  Serial.print(F("\n\nRace Result\n-----------"));
+  for (uint8_t i = 0; i < NUM_RACERS; i++)
+  {
+    Serial.print(F("\nLane "));
+    Serial.print(i+1);
+    Serial.print(F(": "));
+    if (racer[i].isFoul)
+    {
+      Serial.print(F("DQ"));        // disqualified
+      if (racer[i].timeResult != 0) // reaction time recorded
+      {
+        Serial.print(F(" [-"));
+        Serial.print(racer[i].timeResult);
+        Serial.print(F("]"));
+      }
+    }
+    else if (racer[i].timeResult == 0)
+      Serial.print(F("DNF"));       // did not finish
+    else
+      Serial.print(racer[i].timeResult);
+  }
+}
+#endif
+
 void setup(void)
 {
+#if TIMING_ENABLED
+  Serial.begin(57600);    // use this to output timing results
+#endif
   FastLED.addLeds<CHIPSET_TYPE, DATA_PIN, RGB_TYPE>(led, NUM_LEDS);
 
   setLampsOff();
@@ -277,6 +357,9 @@ void setup(void)
   {
     pinMode(racer[i].pinStaged, INPUT_PULLUP);
     pinMode(racer[i].pinFoul, INPUT_PULLUP);
+#if TIMING_ENABLED
+    pinMode(racer[i].pinFinish, INPUT_PULLUP);
+#endif
   }
   swControl.begin();
 }
@@ -291,6 +374,9 @@ void loop(void)
     START_READY,  // yellow light sequence 
     START_SET,    // delay before green
     START_GO,     // set green light
+#if TIMING_ENABLED
+    WAIT_FINISH,  // wait for racers to finish to get time
+#endif
     WAIT_RESET,   // sequence ended, waiting for signal to reset
   } curState = RESET;
 
@@ -301,7 +387,12 @@ void loop(void)
   {
   case RESET:           // reset variables for next run
     for (auto i = 0; i < NUM_RACERS; i++)
+    {
       racer[i].isStaged = racer[i].isFoul = false;
+#if TIMING_ENABLED
+      racer[i].timeResult = 0;
+#endif
+    }
     setLampsOff();
     curState = PRE_STAGE;
     break;
@@ -356,21 +447,22 @@ void loop(void)
     break;
 
   case WAIT_START:      // delay before start sequence
-    checkForFalseStart();
+    checkForFalseStart(timeStart, READY_DELAY + (READY_COUNT*SET_DELAY) + GO_DELAY);
 
     if (millis() - timeStart >= READY_DELAY)
     {
       curState = START_READY;
+      timeStart = millis();
       count = 0;
     }
     break;
 
   case START_READY:     // yellow light sequence 
-    checkForFalseStart();
+    checkForFalseStart(timeStart, (READY_COUNT*SET_DELAY) + GO_DELAY);
 
     if (SET_DELAY == 0)   // all lights simultaneously
     {
-      for (count=0; count<ARRAY_SIZE(idReady); count++)
+      for (count=0; count<READY_COUNT; count++)
         setLampsReady(count);
     }
     else                  // lights sequenced with delay between
@@ -384,7 +476,7 @@ void loop(void)
     }
 
     // check if all lights are on
-    if (count == ARRAY_SIZE(idReady))
+    if (count == READY_COUNT)
     {
       timeStart = millis();
       curState = START_SET;
@@ -392,7 +484,7 @@ void loop(void)
     break;
 
   case START_SET:       // delay before green
-    checkForFalseStart();
+    checkForFalseStart(timeStart, GO_DELAY);
 
     // monitor the timer
     if (millis() - timeStart >= GO_DELAY)
@@ -401,8 +493,36 @@ void loop(void)
     
   case START_GO:       // set green lights
     setLampsGo();
+    timeStart = millis();
+#if TIMING_ENABLED
+    curState = WAIT_FINISH;
+#else
     curState = WAIT_RESET;
+#endif
     break;
+
+#if TIMING_ENABLED
+  case WAIT_FINISH:    // wait for all racers to finish or indicator to reset
+    {
+      bool allDone = false;
+
+      // If controller termintes the run, finish it off now
+      if (swControl.read() == MD_UISwitch::KEY_PRESS)
+      {
+        allDone = true;
+        curState = RESET;
+      }
+
+      // When all racers have finished, display the results and wait for controller
+      if (checkForFinish(timeStart))
+      {
+        allDone = true;
+        curState = WAIT_RESET;
+      }
+      if (allDone) showTimeResults();
+    }
+    break;
+#endif
     
   case WAIT_RESET:     // tree sequence ended, waiting for signal to reset
     if (swControl.read() == MD_UISwitch::KEY_PRESS)

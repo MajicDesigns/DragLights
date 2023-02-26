@@ -60,12 +60,13 @@ Hardware definitions
 ====================
 - PIN_CONTROL defines the digital input to reset the lights sequence and enable 
 the next one.
-- Racer prestage and staged beams digital inputs are defined in the racer[] array. 
+- Racer stage, foul and finish line beams digital inputs are defined in the racer[] array. 
+- DATA_PIN defines the neopixel serial output data pin
 
 Dependencies
 ============
 MD_UISwitch library can be found at https://github.com/MajicDesign/MD_UISwitch or the IDE library manager
-FASTLed can be found at https://fastled.io/ or the IDE library manager.
+FastLED library can be found at https://fastled.io/ or the IDE library manager.
 */
 
 #include <FastLED.h>
@@ -118,16 +119,17 @@ const CRGB LAMP_READY = CRGB::Orange;
 const CRGB LAMP_GO = CRGB::Green;
 const CRGB LAMP_FOUL = CRGB::Red;
 
-// Define the offsets from base for each set of lights
-const uint8_t idStaging = 0;            // LED offset for the staging lamp
-const uint8_t idStaged = 1;             // LED number for the staged lamp
-const uint8_t idReady[] = { 2, 3, 4 };  // LED numbers for the ready lamps (yellow)
-const uint8_t idGo = 5;                 // LED number for the go lamp (green)
-const uint8_t idFoul = 6;               // LED number for the foul lamp (red)
+// Define the offsets from arbitrary base for each set of lights
+const uint8_t idStaging[] = { 0, 1 };   // LED offset for the staging lamp (LAMP_STAGING)
+const uint8_t idStaged[] = { 2, 3 };    // LED number for the staged lamp (LAMP_STAGED)
+const uint8_t idReady[] = { 4, 5, 6 };  // LED numbers for the ready lamps (LAMP_READY)
+const uint8_t idGo = 7;                 // LED number for the go lamp (LAMP_GO)
+const uint8_t idFoul = 8;               // LED number for the foul lamp (LAMP_FOUL)
 
-const uint8_t LED_PER_TREE = 7;                  // Number of LEDS in each tree
-const uint8_t READY_COUNT = ARRAY_SIZE(idReady); // Number of ready LEDS in a tree
-
+const uint8_t LED_PER_TREE = 9;                     // Number of LEDS in each tree
+const uint8_t STAGING_COUNT = ARRAY_SIZE(idStaging);// Number of LEDS in staging
+const uint8_t STAGED_COUNT = ARRAY_SIZE(idStaged);  // Number of LEDS in staged
+const uint8_t READY_COUNT = ARRAY_SIZE(idReady);    // Number of ready LEDS in ready
 
 // Define what we need to keep track of for one tree of lamps
 struct oneTree_t
@@ -211,8 +213,10 @@ void setLampsOff(void)
 {
   for (auto i = 0; i < NUM_TREES; i++)
   {
-    led[display[i].idLEDBase + idStaging] = LAMP_OFF;
-    led[display[i].idLEDBase + idStaged] = LAMP_OFF;
+    for (auto j=0; j<STAGING_COUNT; j++)
+      led[display[i].idLEDBase + idStaging[j]] = LAMP_OFF;
+    for (auto j=0; j<STAGED_COUNT; j++)
+      led[display[i].idLEDBase + idStaged[j]] = LAMP_OFF;
     for (auto j=0; j<READY_COUNT; j++)
       led[display[i].idLEDBase + idReady[j]] = LAMP_OFF;
     led[display[i].idLEDBase + idGo] = LAMP_OFF;
@@ -221,10 +225,13 @@ void setLampsOff(void)
   FastLED.show();
 }
 
-void setLampsPreStage(void)
+void setLampsStaging(void)
 {
-  for (auto i=0; i<NUM_TREES; i++)
-    led[display[i].idLEDBase + idStaging] = LAMP_STAGING;
+  for (auto i = 0; i < NUM_TREES; i++)
+  {
+    for (auto j=0; j<STAGING_COUNT; j++)
+      led[display[i].idLEDBase + idStaging[j]] = LAMP_STAGING;
+  }
   FastLED.show();
 }
 
@@ -233,21 +240,24 @@ void setLampsStaged(uint8_t racer)
   for (auto i = 0; i < NUM_TREES; i++)
   {
     if (display[i].idRacer == racer)
-      led[display[i].idLEDBase + idStaged] = LAMP_STAGED;
+    {
+      for (auto j=0; j<STAGED_COUNT; j++)
+        led[display[i].idLEDBase + idStaged[j]] = LAMP_STAGED;
+    }
   }
   FastLED.show();
 }
 
 void setLampsReady(uint8_t idx)
 {
-  for (auto i = 0; i < NUM_TREES; i++)
+  for (auto i=0; i<NUM_TREES; i++)
     led[display[i].idLEDBase + idReady[idx]] = LAMP_READY;
   FastLED.show();
 }
 
 void setLampsGo(void)
 {
-  for (auto i = 0; i < NUM_TREES; i++)
+  for (auto i=0; i<NUM_TREES; i++)
     if (!racer[display[i].idRacer].isFoul)
       led[display[i].idLEDBase + idGo] = LAMP_GO;
   FastLED.show();
@@ -255,7 +265,7 @@ void setLampsGo(void)
 
 void setLampsFoul(uint8_t racer)
 {
-  for (auto i = 0; i < NUM_TREES; i++)
+  for (auto i=0; i<NUM_TREES; i++)
   {
     if (display[i].idRacer == racer)
       led[display[i].idLEDBase + idFoul] = LAMP_FOUL;
@@ -269,7 +279,7 @@ bool alreadyFoul(void)
   bool b = false;
 
   // check at least one already fouled
-  for (auto i = 0; i < NUM_RACERS; i++)
+  for (auto i=0; i<NUM_RACERS; i++)
     b |= racer[i].isFoul;
 
   return(b);
@@ -281,7 +291,7 @@ bool checkForFalseStart(uint32_t timeStart, uint32_t timePeriod)
   bool b = false;
 
   // check the foul inputs
-  for (auto i = 0; i < NUM_RACERS; i++)
+  for (auto i=0; i<NUM_RACERS; i++)
   {
     if ((digitalRead(racer[i].pinFoul) == LOW)  && !alreadyFoul())
     {
@@ -303,7 +313,7 @@ bool checkForFinish(uint32_t timeStart)
   bool b = true;
 
   // check the finish inputs
-  for (auto i = 0; i < NUM_RACERS; i++)
+  for (auto i=0; i<NUM_RACERS; i++)
   {
     // not fouled or not already recorded time
     if (!racer[i].isFoul && (racer[i].timeResult == 0))
@@ -342,6 +352,7 @@ void showTimeResults(void)
       Serial.print(racer[i].timeResult);
   }
 }
+
 #endif
 
 void setup(void)
@@ -400,7 +411,7 @@ void loop(void)
   case PRE_STAGE:       // wait for signal to enable tree
     if (swControl.read() == MD_UISwitch::KEY_PRESS)
     {
-      setLampsPreStage();
+      setLampsStaging();
       timeStart = 0;
       curState = STAGING;
     }
